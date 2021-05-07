@@ -17,4 +17,4 @@ genkeys:
 	rm -f $(SSH_HOSTKEYS)/*.pub
 
 forward:
-	ssh $(SSH_HOST) -p $(SSH_PORT) $(SSH_OPTS)
+	ssh -T $(SSH_HOST) -p $(SSH_PORT) $(SSH_OPTS)
