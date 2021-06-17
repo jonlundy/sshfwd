@@ -4,7 +4,7 @@ export SSH_AUTHKEYS?=authkeys
 
 export SSH_HOST?=localhost
 export SSH_PORT?=2222
-export SSH_OPTS?=-R 1234:localhost:22
+export SSH_OPTS?=-R 0.0.0.0:1234:localhost:3000
 
 run:
 	go run .
@@ -17,4 +17,4 @@ genkeys:
 	rm -f $(SSH_HOSTKEYS)/*.pub
 
 forward:
-	ssh $(SSH_HOST) -p $(SSH_PORT) $(SSH_OPTS)
+	ssh -T $(SSH_HOST) -p $(SSH_PORT) $(SSH_OPTS)
