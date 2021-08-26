@@ -25,8 +25,8 @@ import (
 const (
 	domainName          = "prox.int"
 	domainSuffix        = ".prox.int"
-	portStart    uint32 = 4000
-	portEnd      uint32 = 4999
+	portStart    uint32 = 7000
+	portEnd      uint32 = 7999
 	bindHost            = "[::1]"
 )
 
