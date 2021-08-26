@@ -310,7 +310,7 @@ func (srv *server) handleHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
-		pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(r.FormValue("pub")))
+		pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(r.PostFormValue("pub")))
 		if err != nil {
 			rw.WriteHeader(400)
 			fmt.Fprintln(rw, "ERR READING KEY")
