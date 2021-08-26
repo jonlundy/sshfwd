@@ -434,11 +434,8 @@ func (m *serverMux) Serve(ctx context.Context) error {
 	}
 }
 
-<<<<<<< Updated upstream
 func fingerprintHuman(pubKey ssh.PublicKey) string {
 	sha256sum := sha256.Sum256(pubKey.Marshal())
 	h, _ := humanhash.Humanize(sha256sum[:], 3)
 	return h
 }
-=======
->>>>>>> Stashed changes
