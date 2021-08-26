@@ -129,6 +129,7 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 
 		<-ctx.Done()
 
+		srv.ports.Delete(s.User())
 		if _, err := fmt.Fprintf(s, "Goodbye! %s\n", s.User()); err != nil {
 			return
 		}
