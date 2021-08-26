@@ -110,6 +110,7 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 		if u, ok := srv.GetUserByName(s.User()); ok {
 			host := fmt.Sprintf("%v:%v", u.bindHost, u.bindPort)
 			director := func(req *http.Request) {
+				req = req.WithContext(s.Context())
 				if h := req.Header.Get("X-Forwarded-Host"); h == "" {
 					req.Header.Set("X-Forwarded-Host", req.Host)
 				}
@@ -127,9 +128,16 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 			fmt.Fprintf(s, "Created HTTP listener at: %v%v\n", u.name, srv.domainSuffix)
 		}
 
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+			log.Println("server shutting down")
+		case <-s.Context().Done():
+			log.Println("user", s.User(), "disconnected")
+		}
 
-		srv.ports.Delete(s.User())
+		if u, ok := srv.GetUserByName(s.User()); ok {
+			srv.ports.Delete(u.bindPort)
+		}
 		if _, err := fmt.Fprintf(s, "Goodbye! %s\n", s.User()); err != nil {
 			return
 		}
@@ -298,6 +306,7 @@ func (srv *server) serveHTTP(ctx context.Context) func(net.Listener) error {
 		ReadTimeout:  2500 * time.Millisecond,
 		WriteTimeout: 5 * time.Second,
 		Handler:      http.DefaultServeMux,
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
 	go func(ctx context.Context) {
