@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ const (
 	portEnd      uint32 = 7999
 	bindHost            = "[::1]"
 )
+
+var filterName = regexp.MustCompile("[^a-z0-9-]+")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -153,7 +156,9 @@ func (srv *server) AddUser(pubkey ssh.PublicKey) *user {
 	u.pubkey = pubkey
 
 	babbler := babble.NewBabbler()
-	u.name = strings.ToLower(babbler.Babble())
+	u.name = babbler.Babble()
+	u.name = strings.ToLower(u.name)
+	u.name = filterName.ReplaceAllString(u.name, "")
 
 	u.bindPort = srv.nextPort()
 	u.bindHost = srv.bindHost
