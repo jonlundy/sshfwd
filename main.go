@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -19,7 +20,7 @@ import (
 
 	"github.com/gliderlabs/ssh"
 	"github.com/soheilhy/cmux"
-	"github.com/tjarratt/babble"
+	"github.com/wolfeidau/humanhash"
 	"go.uber.org/multierr"
 )
 
@@ -153,17 +154,19 @@ type user struct {
 
 func (srv *server) AddUser(pubkey ssh.PublicKey) *user {
 	u := &user{}
-	u.pubkey = pubkey
 
-	babbler := babble.NewBabbler()
-	u.name = babbler.Babble()
+	u.name = fingerprintHuman(pubkey)
 	u.name = strings.ToLower(u.name)
 	u.name = filterName.ReplaceAllString(u.name, "")
 
+	if g, ok := srv.users.LoadOrStore(u.name, u); ok {
+		u = g.(*user)
+		return u
+	}
+
+	u.pubkey = pubkey
 	u.bindPort = srv.nextPort()
 	u.bindHost = srv.bindHost
-
-	srv.users.Store(u.name, u)
 
 	return u
 }
@@ -310,7 +313,7 @@ func (srv *server) handleHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
-		pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(r.PostFormValue("pub")))
+		pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(r.FormValue("pub")))
 		if err != nil {
 			rw.WriteHeader(400)
 			fmt.Fprintln(rw, "ERR READING KEY")
@@ -422,4 +425,10 @@ func (m *serverMux) Serve(ctx context.Context) error {
 	case err := <-errChan:
 		return err
 	}
+}
+
+func fingerprintHuman(pubKey ssh.PublicKey) string {
+	sha256sum := sha256.Sum256(pubKey.Marshal())
+	h, _ := humanhash.Humanize(sha256sum[:], 3)
+	return h
 }

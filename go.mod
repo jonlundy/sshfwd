@@ -7,6 +7,7 @@ require (
 	github.com/gliderlabs/ssh v0.3.2
 	github.com/soheilhy/cmux v0.1.5
 	github.com/tjarratt/babble v0.0.0-20210505082055-cbca2a4833c1
+	github.com/wolfeidau/humanhash v1.1.0 // indirect
 	go.uber.org/multierr v1.7.0
 	golang.org/dl v0.0.0-20210816190658-eea66df5a73d // indirect
 	golang.org/x/crypto v0.0.0-20210506145944-38f3c27a63bf // indirect
