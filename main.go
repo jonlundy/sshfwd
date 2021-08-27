@@ -25,11 +25,9 @@ import (
 )
 
 const (
-	domainName          = "prox.int"
-	domainSuffix        = ".prox.int"
-	portStart    uint32 = 7000
-	portEnd      uint32 = 7999
-	bindHost            = "[::1]"
+	domainName = "prox.int"
+	portRange  = "7000-7999"
+	bindHost   = "[::1]"
 )
 
 var filterName = regexp.MustCompile("[^a-z0-9-]+")
@@ -53,21 +51,19 @@ func run(ctx context.Context) {
 		ssh.NoPty(),
 	)
 
-	files, err := ioutil.ReadDir(envMust("SSH_HOSTKEYS"))
+	hostKeys := envMust("SSH_HOSTKEYS")
+	files, err := ioutil.ReadDir(hostKeys)
 	if err != nil {
 		log.Fatal(err)
+	}
+	for _, f := range files {
+		opts = append(opts, ssh.HostKeyFile(filepath.Join(hostKeys, f.Name())))
 	}
 
 	srv := &server{
 		bindHost:     envDefault("SSH_HOST", bindHost),
-		portStart:    portStart,
-		portEnd:      portEnd,
 		domainName:   envDefault("SSH_DOMAIN", domainName),
-		domainSuffix: envDefault("SSH_DOMAIN_SUFFIX", domainSuffix),
-	}
-
-	for _, f := range files {
-		opts = append(opts, ssh.HostKeyFile(filepath.Join(envMust("SSH_HOSTKEYS"), f.Name())))
+		domainSuffix: envDefault("SSH_DOMAIN_SUFFIX", "."+domainName),
 	}
 	opts = append(opts, srv.optAuthUser()...)
 
@@ -81,7 +77,31 @@ func run(ctx context.Context) {
 		}
 	}
 
-	log.Fatal(mux.Serve(ctx))
+	if r := envDefault("SSH_PORTRANGE", portRange); r != "" {
+		sp := strings.SplitN(r, "-", 2)
+		if len(sp) == 1 {
+			log.Fatal("SSH_PORTRANGE should have start and end like 7000-7999")
+		}
+
+		var p uint64
+		if p, err = strconv.ParseUint(sp[0], 10, 32); err != nil {
+			log.Fatal("SSH_PORTRANGE start port invalid:", sp[0])
+		}
+		srv.portStart = uint32(p)
+
+		if p, err = strconv.ParseUint(sp[1], 10, 32); err != nil {
+			log.Fatal("SSH_PORTRANGE end port invalid:", sp[1])
+		}
+		srv.portEnd = uint32(p)
+
+		if srv.portStart > srv.portEnd {
+			log.Fatalf("SSH_PORTRANGE is reversed %d > %d", srv.portStart, srv.portEnd)
+		}
+	}
+
+	if err = mux.Serve(ctx); err != nil {
+		log.Fatal()
+	}
 }
 
 func envMust(s string) string {
@@ -95,7 +115,7 @@ func envMust(s string) string {
 func envDefault(s, d string) string {
 	v := os.Getenv(s)
 	if v == "" {
-		return d
+		v = d
 	}
 	log.Println("env", s, "==", v)
 	return v
@@ -110,7 +130,6 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 		if u, ok := srv.GetUserByName(s.User()); ok {
 			host := fmt.Sprintf("%v:%v", u.bindHost, u.bindPort)
 			director := func(req *http.Request) {
-				req = req.WithContext(s.Context())
 				if h := req.Header.Get("X-Forwarded-Host"); h == "" {
 					req.Header.Set("X-Forwarded-Host", req.Host)
 				}
@@ -120,12 +139,12 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 
 				requestDump, err := httputil.DumpRequest(req, req.Method == http.MethodPost || req.Method == http.MethodPut)
 				if err != nil {
-				  fmt.Println(err)
+					fmt.Println(err)
 				}
 				fmt.Fprintln(s, string(requestDump))
 			}
 			u.proxy = &httputil.ReverseProxy{Director: director}
-			fmt.Fprintf(s, "Created HTTP listener at: %v%v\n", u.name, srv.domainSuffix)
+			fmt.Fprintf(s, "Created HTTP listener at: %v%v\n\n", u.name, srv.domainSuffix)
 		}
 
 		select {
@@ -136,6 +155,8 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 		}
 
 		if u, ok := srv.GetUserByName(s.User()); ok {
+			u.ctx = nil
+			u.proxy = nil
 			srv.ports.Delete(u.bindPort)
 		}
 		if _, err := fmt.Fprintf(s, "Goodbye! %s\n", s.User()); err != nil {
@@ -158,18 +179,43 @@ type server struct {
 	users sync.Map
 }
 
+func (s *server) String() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "Server:     ", s.domainName)
+	fmt.Fprintln(&b, "  Port:     ", s.listenPort)
+	fmt.Fprintln(&b, "  Suffix:   ", s.domainSuffix)
+	fmt.Fprintln(&b, "  BindHost: ", s.bindHost)
+	fmt.Fprintf(&b, "  PortRange: %d-%d\n", s.portStart, s.portEnd)
+	fmt.Fprintln(&b, "  NextPort: ", s.portNext)
+	return b.String()
+}
+
 type user struct {
-	name     string
-	pubkey   ssh.PublicKey
-	bindHost string
-	bindPort uint32
-	ctx      ssh.Context
-	proxy    http.Handler
+	name      string
+	pubkey    ssh.PublicKey
+	bindHost  string
+	bindPort  uint32
+	ctx       ssh.Context
+	proxy     http.Handler
+	lastLogin time.Time
+}
+
+func (u *user) String() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "User:     ", u.name)
+	fmt.Fprintf(&b, "  Ptr:     %p\n", u)
+	fmt.Fprintf(&b, "  Pubkey:  %x\n", u.pubkey)
+	fmt.Fprintln(&b, "  Host:   ", u.bindHost)
+	fmt.Fprintln(&b, "  Port:   ", u.bindPort)
+	fmt.Fprintf(&b, "  Active:  %t\n", u.ctx != nil)
+	fmt.Fprintln(&b, "  LastLog:", u.lastLogin)
+	return b.String()
 }
 
 func (srv *server) AddUser(pubkey ssh.PublicKey) *user {
 	u := &user{}
 
+	u.lastLogin = time.Now()
 	u.name = fingerprintHuman(pubkey)
 	u.name = strings.ToLower(u.name)
 	u.name = filterName.ReplaceAllString(u.name, "")
@@ -248,9 +294,13 @@ func (srv *server) optAuthUser() []ssh.Option {
 			}
 
 			if ssh.KeysEqual(key, u.pubkey) {
-				log.Println("User: ", ctx.User(), "Authorized:", u.bindHost, u.bindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
+				log.Println("User:", ctx.User(), "Authorized:", u.bindHost, u.bindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
 				u.ctx = ctx
-				srv.ports.Store(u.bindPort, u)
+				u.lastLogin = time.Now()
+				if _, loaded := srv.ports.LoadOrStore(u.bindPort, u); loaded {
+					log.Println("User:", ctx.User(), "already connected!")
+					return false
+				}
 				return true
 			}
 
@@ -306,7 +356,7 @@ func (srv *server) serveHTTP(ctx context.Context) func(net.Listener) error {
 		ReadTimeout:  2500 * time.Millisecond,
 		WriteTimeout: 5 * time.Second,
 		Handler:      http.DefaultServeMux,
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		BaseContext:  func(net.Listener) context.Context { return ctx },
 	}
 
 	go func(ctx context.Context) {
@@ -338,16 +388,20 @@ func (srv *server) handleHTTP(rw http.ResponseWriter, r *http.Request) {
 		}
 		u := srv.AddUser(pubkey)
 		rw.WriteHeader(201)
-		fmt.Fprintf(rw, `ssh -T -p %v %v@%v -R "%v:%v:localhost:$LOCAL_PORT" -i $PRIV_KEY`, srv.listenPort, u.name, srv.domainName, u.bindHost, u.bindPort)
+		fmt.Fprintf(rw, `ssh -T -p %v %v@%v -R "%v:%v:localhost:$LOCAL_PORT" -i $PRIV_KEY`+"\n", srv.listenPort, u.name, srv.domainName, u.bindHost, u.bindPort)
 		return
 	}
 
-	fmt.Fprintln(rw, "Hello!", r.Host, r.URL)
+	fmt.Fprintln(rw, "Hello!")
+	fmt.Fprintln(rw, srv)
+	fmt.Fprintln(rw, "Registered Users")
 	for _, u := range srv.ListUsers() {
-		fmt.Fprintln(rw, "User:", u.name)
+		fmt.Fprintln(rw, u)
 	}
+
+	fmt.Fprintln(rw, "Connected Users")
 	for _, u := range srv.ListConnectedUsers() {
-		fmt.Fprintln(rw, "Conn:", u.name)
+		fmt.Fprintln(rw, u)
 	}
 }
 
