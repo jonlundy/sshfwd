@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -44,13 +43,15 @@ func run(ctx context.Context) {
 	)
 
 	hostKeys := envMust("SSH_HOSTKEYS")
-	files, err := ioutil.ReadDir(hostKeys)
+	files, err := os.ReadDir(hostKeys)
 	if err != nil {
 		log.Fatal(err)
 	}
 	for _, f := range files {
 		opts = append(opts, ssh.HostKeyFile(filepath.Join(hostKeys, f.Name())))
 	}
+
+	loadTemplates()
 
 	srv := &server{
 		bindHost:     envDefault("SSH_HOST", bindHost),

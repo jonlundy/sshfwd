@@ -18,7 +18,7 @@ For best results place this behind a TLS termination that has a wildcard certifi
 on your local machine have a ssh private and public key available:
 
 ```sh
-$ export LOCAL_PORT=3000; export PRIV_KEY=~/.ssh/id_ed25519; sh -c "$(shell http --form POST example.com:2222 pub=@$(PRIV_KEY).pub)"
+$ export LOCAL_PORT=3000; export PRIV_KEY=~/.ssh/id_ed25519; sh -c "$(shell http --form POST :2222 pub=@$(PRIV_KEY).pub)"
 ```
 
 This will setup a reverse proxy on the example host that you can then use to access the local port. It will print a name unique to your ssh key.

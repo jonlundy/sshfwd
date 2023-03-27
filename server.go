@@ -3,38 +3,49 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/gliderlabs/ssh"
 	"github.com/wolfeidau/humanhash"
 )
 
+var (
+	//go:embed pages/* layouts/* assets/*
+	files     embed.FS
+	templates map[string]*template.Template
+)
+
 type user struct {
-	name      string
-	pubkey    ssh.PublicKey
-	bindHost  string
-	bindPort  uint32
+	Name      string
+	Pubkey    ssh.PublicKey
+	BindHost  string
+	BindPort  uint32
 	ctx       ssh.Context
 	proxy     http.Handler
-	lastLogin time.Time
+	LastLogin time.Time
 }
+
+func (u *user) Active() bool { return u.ctx != nil }
 
 func (u *user) String() string {
 	var b strings.Builder
-	fmt.Fprintln(&b, "User:     ", u.name)
+	fmt.Fprintln(&b, "User:     ", u.Name)
 	fmt.Fprintf(&b, "  Ptr:     %p\n", u)
-	fmt.Fprintf(&b, "  Pubkey:  %x\n", u.pubkey)
-	fmt.Fprintln(&b, "  Host:   ", u.bindHost)
-	fmt.Fprintln(&b, "  Port:   ", u.bindPort)
+	fmt.Fprintf(&b, "  Pubkey:  %x\n", u.Pubkey)
+	fmt.Fprintln(&b, "  Host:   ", u.BindHost)
+	fmt.Fprintln(&b, "  Port:   ", u.BindPort)
 	fmt.Fprintf(&b, "  Active:  %t\n", u.ctx != nil)
-	fmt.Fprintln(&b, "  LastLog:", u.lastLogin)
+	fmt.Fprintln(&b, "  LastLog:", u.LastLogin)
 	return b.String()
 }
 
@@ -67,19 +78,19 @@ func (s *server) String() string {
 func (srv *server) addUser(pubkey ssh.PublicKey) *user {
 	u := &user{}
 
-	u.lastLogin = time.Now()
-	u.name = fingerprintHuman(pubkey)
-	u.name = strings.ToLower(u.name)
-	u.name = filterName.ReplaceAllString(u.name, "")
+	u.LastLogin = time.Now()
+	u.Name = fingerprintHuman(pubkey)
+	u.Name = strings.ToLower(u.Name)
+	u.Name = filterName.ReplaceAllString(u.Name, "")
 
-	if g, ok := srv.users.LoadOrStore(u.name, u); ok {
+	if g, ok := srv.users.LoadOrStore(u.Name, u); ok {
 		u = g.(*user)
 		return u
 	}
 
-	u.pubkey = pubkey
-	u.bindPort = srv.nextPort()
-	u.bindHost = srv.bindHost
+	u.Pubkey = pubkey
+	u.BindPort = srv.nextPort()
+	u.BindHost = srv.bindHost
 
 	return u
 }
@@ -87,7 +98,7 @@ func (srv *server) disconnectUser(name string) {
 	if u, ok := srv.getUserByName(name); ok {
 		u.ctx = nil
 		u.proxy = nil
-		srv.ports.Delete(u.bindPort)
+		srv.ports.Delete(u.BindPort)
 	}
 }
 func (srv *server) getUserByPort(port uint32) (*user, bool) {
@@ -121,18 +132,6 @@ func (srv *server) listUsers() []*user {
 
 	return lis
 }
-func (srv *server) listConnectedUsers() []*user {
-	var lis []*user
-	srv.ports.Range(func(key, value interface{}) bool {
-		if u, ok := value.(*user); ok {
-			lis = append(lis, u)
-			return true
-		}
-		return false
-	})
-
-	return lis
-}
 func (srv *server) nextPort() uint32 {
 	if srv.portNext < srv.portStart || srv.portNext > srv.portEnd {
 		srv.portNext = srv.portStart
@@ -160,7 +159,7 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 		}
 
 		if u, ok := srv.getUserByName(s.User()); ok {
-			host := fmt.Sprintf("%v:%v", u.bindHost, u.bindPort)
+			host := fmt.Sprintf("%v:%v", u.BindHost, u.BindPort)
 			director := func(req *http.Request) {
 				if h := req.Header.Get("X-Forwarded-Host"); h == "" {
 					req.Header.Set("X-Forwarded-Host", req.Host)
@@ -176,7 +175,7 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 				fmt.Fprintln(s, string(requestDump))
 			}
 			u.proxy = &httputil.ReverseProxy{Director: director}
-			fmt.Fprintf(s, "Created HTTP listener at: %v%v\n\n", u.name, srv.domainSuffix)
+			fmt.Fprintf(s, "Created HTTP listener at: %v%v\n\n", u.Name, srv.domainSuffix)
 		}
 
 		select {
@@ -201,11 +200,11 @@ func (srv *server) optAuthUser() []ssh.Option {
 				return false
 			}
 
-			if ssh.KeysEqual(key, u.pubkey) {
-				log.Println("User:", ctx.User(), "Authorized:", u.bindHost, u.bindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
+			if ssh.KeysEqual(key, u.Pubkey) {
+				log.Println("User:", ctx.User(), "Authorized:", u.BindHost, u.BindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
 				u.ctx = ctx
-				u.lastLogin = time.Now()
-				if _, loaded := srv.ports.LoadOrStore(u.bindPort, u); loaded {
+				u.LastLogin = time.Now()
+				if _, loaded := srv.ports.LoadOrStore(u.BindPort, u); loaded {
 					log.Println("User:", ctx.User(), "already connected!")
 					return false
 				}
@@ -232,11 +231,11 @@ func (srv *server) optAuthUser() []ssh.Option {
 				}
 
 				if u.ctx.SessionID() != ctx.SessionID() {
-					log.Println("Port", bindPort, "in use by", u.name, u.ctx.SessionID())
+					log.Println("Port", bindPort, "in use by", u.Name, u.ctx.SessionID())
 					return false
 				}
 
-				if bindHost != strings.Trim(u.bindHost, "[]") || bindPort != u.bindPort {
+				if bindHost != strings.Trim(u.BindHost, "[]") || bindPort != u.BindPort {
 					log.Println("User", ctx.User(), "Not Allowed: ", bindHost, bindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
 					return false
 				}
@@ -282,25 +281,43 @@ func (srv *server) handleHTTP(rw http.ResponseWriter, r *http.Request) {
 		pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(r.FormValue("pub")))
 		if err != nil {
 			rw.WriteHeader(400)
-			fmt.Fprintln(rw, "ERR READING KEY")
+			fmt.Fprintln(rw, "ERR READING KEY", err)
 			return
 		}
 		u := srv.addUser(pubkey)
-		rw.WriteHeader(201)
-		fmt.Fprintf(rw, `ssh -T -p %v %v@%v -R "%v:%v:localhost:$LOCAL_PORT" -i $PRIV_KEY`+"\n", srv.listenPort, u.name, srv.domainName, u.bindHost, u.bindPort)
+		rw.Header().Set("Location", "/")
+		rw.WriteHeader(http.StatusFound)
+		fmt.Fprintf(rw, `ssh -T -p %v %v@%v -R "%v:%v:localhost:$LOCAL_PORT" -i $PRIV_KEY`+"\n", srv.listenPort, u.Name, srv.domainName, u.BindHost, u.BindPort)
 		return
 	}
 
-	fmt.Fprintln(rw, "Hello!")
-	fmt.Fprintln(rw, srv)
-	fmt.Fprintln(rw, "Registered Users")
-	for _, u := range srv.listUsers() {
-		fmt.Fprintln(rw, u)
+	// fmt.Fprintln(rw, "Hello!")
+	// fmt.Fprintln(rw, srv)
+	// fmt.Fprintln(rw, "Registered Users")
+	// for _, u := range srv.listUsers() {
+	// 	fmt.Fprintln(rw, u)
+	// }
+
+	// fmt.Fprintln(rw, "Connected Users")
+	// for _, u := range srv.listConnectedUsers() {
+	// 	fmt.Fprintln(rw, u)
+	// }
+
+	a, _ := fs.Sub(files, "assets")
+	assets := http.StripPrefix("/assets/", http.FileServer(http.FS(a)))
+	if strings.HasPrefix(r.URL.Path, "/assets/") {
+		assets.ServeHTTP(rw, r)
+		return
 	}
 
-	fmt.Fprintln(rw, "Connected Users")
-	for _, u := range srv.listConnectedUsers() {
-		fmt.Fprintln(rw, u)
+	t := templates["home.go.tpl"]
+	err := t.Execute(rw, map[string]any{
+		"Users":      srv.listUsers(),
+		"ListenPort": srv.listenPort,
+		"DomainName": srv.domainName,
+	})
+	if err != nil {
+		log.Println(err)
 	}
 }
 
@@ -308,4 +325,33 @@ func fingerprintHuman(pubKey ssh.PublicKey) string {
 	sha256sum := sha256.Sum256(pubKey.Marshal())
 	h, _ := humanhash.Humanize(sha256sum[:], 3)
 	return h
+}
+
+var funcMap = map[string]any{}
+
+func loadTemplates() error {
+	if templates != nil {
+		return nil
+	}
+	templates = make(map[string]*template.Template)
+	tmplFiles, err := fs.ReadDir(files, "pages")
+	if err != nil {
+		return err
+	}
+
+	for _, tmpl := range tmplFiles {
+		if tmpl.IsDir() {
+			continue
+		}
+		pt := template.New(tmpl.Name())
+		pt.Funcs(funcMap)
+		pt, err = pt.ParseFS(files, "pages/"+tmpl.Name(), "layouts/*.go.tpl")
+		if err != nil {
+			log.Println(err)
+
+			return err
+		}
+		templates[tmpl.Name()] = pt
+	}
+	return nil
 }
