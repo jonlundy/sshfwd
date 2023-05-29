@@ -103,8 +103,12 @@ func (srv *server) disconnectUser(name string) {
 }
 func (srv *server) getUserByPort(port uint32) (*user, bool) {
 	if u, ok := srv.ports.Load(port); ok {
+		log.Printf("%d %T %s", port, u, u)
+
 		if u, ok := u.(*user); ok {
 			return u, true
+		} else {
+			log.Println("port not found", port, ok)
 		}
 	}
 	return nil, false
@@ -113,6 +117,8 @@ func (srv *server) getUserByName(name string) (*user, bool) {
 	if u, ok := srv.users.Load(name); ok {
 		if u, ok := u.(*user); ok {
 			return u, true
+		} else {
+			log.Println("user not found", name, ok)
 		}
 	}
 	return nil, false
@@ -132,6 +138,21 @@ func (srv *server) listUsers() []*user {
 
 	return lis
 }
+func (srv *server) listPorts() map[uint32]*user {
+	lis := make(map[uint32]*user)
+	srv.ports.Range(func(key, value interface{}) bool {
+		if u, ok := value.(*user); ok {
+			lis[key.(uint32)] = u
+			return true
+		} else {
+			fmt.Println(key, value)
+		}
+		return false
+	})
+
+	return lis
+}
+
 func (srv *server) nextPort() uint32 {
 	if srv.portNext < srv.portStart || srv.portNext > srv.portEnd {
 		srv.portNext = srv.portStart
@@ -159,7 +180,7 @@ func (srv *server) newSession(ctx context.Context) func(ssh.Session) {
 		}
 
 		if u, ok := srv.getUserByName(s.User()); ok {
-			host := fmt.Sprintf("%v:%v", u.BindHost, u.BindPort)
+			host := fmt.Sprintf("%v:%v", "localhost", u.BindPort)
 			director := func(req *http.Request) {
 				if h := req.Header.Get("X-Forwarded-Host"); h == "" {
 					req.Header.Set("X-Forwarded-Host", req.Host)
@@ -235,7 +256,7 @@ func (srv *server) optAuthUser() []ssh.Option {
 					return false
 				}
 
-				if bindHost != strings.Trim(u.BindHost, "[]") || bindPort != u.BindPort {
+				if bindHost != "localhost" || bindPort != u.BindPort {
 					log.Println("User", ctx.User(), "Not Allowed: ", bindHost, bindPort, ctx.ClientVersion(), ctx.SessionID(), ctx.LocalAddr(), ctx.RemoteAddr())
 					return false
 				}
@@ -313,6 +334,7 @@ func (srv *server) handleHTTP(rw http.ResponseWriter, r *http.Request) {
 	t := templates["home.go.tpl"]
 	err := t.Execute(rw, map[string]any{
 		"Users":      srv.listUsers(),
+		"Ports":      srv.listPorts(),
 		"ListenPort": srv.listenPort,
 		"DomainName": srv.domainName,
 	})
